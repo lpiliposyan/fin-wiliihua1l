@@ -143,6 +143,12 @@ label.f textarea { height: 120px; padding: 10px 12px; }
 .listrow:first-child { border-top: 0; }
 svg text { fill: var(--muted); font-family: var(--font); font-size: 9px; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lockscreen { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px; }
+.dots { display: flex; gap: 14px; }
+.dots i { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--accent); }
+.dots i.on { background: var(--accent); }
+.keys { display: grid; grid-template-columns: repeat(3, 76px); gap: 14px; }
+.keys button { height: 76px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); font-size: 26px; font-weight: 500; }
 @media (prefers-reduced-motion: no-preference) { .bar > i { transition: width .4s ease; } }
 </style>
 
@@ -179,7 +185,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     recurring: []
   });
 
-  const S = { tx: [], cfg: defaultCfg(), tab: 'home', month: '', filter: 'all', q: '', myear: String(new Date().getFullYear()), mstat: 'unpaid', tyear: String(new Date().getFullYear()), db: null, ready: false };
+  const MTG_RATE = 12.75;
+  const S = { extra: { monthly: 0, lump: 0 }, tx: [], cfg: defaultCfg(), tab: 'home', month: '', filter: 'all', q: '', myear: String(new Date().getFullYear()), mstat: 'unpaid', tyear: String(new Date().getFullYear()), db: null, ready: false };
 
   /* ---------- helpers ---------- */
   const $ = (s, r) => (r || document).querySelector(s);
@@ -370,6 +377,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const prevCats = Object.fromEntries(byCat(monthTx(addPeriod(S.month, -1))));
     const isNow = S.month === today().slice(0, 7);
     let h = monthBar();
+    let lb = ''; try { lb = localStorage.getItem('fin_lb') || ''; } catch (e) {}
+    if (!S.db && S.tx.length > 20 && (!lb || diffDays(today(), lb) > 14)) h += `<div class="notice">Копию данных давно не сохраняли. <button class="chip" data-act="backup" style="margin-top:8px">Сохранить копию</button></div>`;
 
     h += `<div class="card">
       <div class="muted small">Потрачено за месяц</div>
@@ -395,10 +404,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       h += `<div class="card"><h2>Куда уходят деньги</h2>` + cats.map(([c, v]) => {
         const lim = Number(S.cfg.budgets[c]) || 0;
         const pct = lim > 0 ? Math.min(100, v / lim * 100) : (tt.exp ? v / tt.exp * 100 : 0);
-        return `<div class="cat"><div class="row between"><span class="trunc">${esc(c)}</span><span class="num"><b>${money(v, 0)}</b>${lim > 0 ? `<span class="muted small"> из ${money(lim, 0)}</span>` : ''}</span></div><div class="bar ${lim > 0 && v > lim ? 'over' : ''}"><i style="width:${pct}%"></i></div></div>`;
-      }).join('') + `<div class="small muted" style="margin-top:6px">Лимиты по категориям задаются в настройках ⚙</div></div>`;
+        return `<button class="cat" data-cat="${esc(c)}" style="background:none;border:0;width:100%;text-align:left;padding-inline:0"><div class="row between"><span class="trunc">${esc(c)}</span><span class="num"><b>${money(v, 0)}</b>${lim > 0 ? `<span class="muted small"> из ${money(lim, 0)}</span>` : ''}</span></div><div class="bar ${lim > 0 && v > lim ? 'over' : ''}"><i style="width:${pct}%"></i></div></button>`;
+      }).join('') + `<div class="small muted" style="margin-top:6px">Нажми на категорию, чтобы увидеть все операции. Лимиты задаются в ⚙</div></div>`;
 
       h += `<div class="card"><h2>По дням</h2>${dayChart(list)}</div>`;
+      h += `<div class="card"><h2>Последние 6 месяцев</h2>${monthChart()}</div>`;
 
       // insights
       const ins = [];
@@ -417,6 +427,27 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const sav = sum(S.cfg.accounts.filter((a) => a.kind === 'savings'), balance);
     h += `<div class="card"><h2>Всего на счетах</h2><div class="mid num">${money(tot, 0)}</div><div class="small muted">из них накопления ${money(sav, 0)}</div></div>`;
     return h;
+  }
+
+  const short = (n) => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.0', '') + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(Math.round(n));
+  function monthChart() {
+    const ms = []; for (let k = 5; k >= 0; k--) ms.push(addPeriod(S.month, -k));
+    const data = ms.map((ym) => totals(monthTx(ym)));
+    const max = Math.max(...data.map((d) => Math.max(d.inc, d.exp)), 1);
+    const W = 300, H = 100, gw = W / 6;
+    let g = `<svg viewBox="0 0 ${W} ${H + 18}" width="100%" role="img" aria-label="Доходы и расходы по месяцам"><line x1="0" x2="${W}" y1="${H}" y2="${H}" stroke="var(--line)"/>`;
+    data.forEach((d, i) => {
+      const x = i * gw + gw / 2, hi = d.inc / max * (H - 16), he = d.exp / max * (H - 16);
+      g += `<rect x="${x - 13}" y="${H - hi}" width="12" height="${hi}" rx="2" fill="var(--in)"/><rect x="${x + 1}" y="${H - he}" width="12" height="${he}" rx="2" fill="var(--out)"/>`;
+      g += `<text x="${x}" y="${H + 12}" text-anchor="middle">${MONTHS[Number(ms[i].slice(5)) - 1].slice(0, 3)}</text>`;
+      if (d.exp > 0) g += `<text x="${x + 7}" y="${H - he - 3}" text-anchor="middle">${short(d.exp)}</text>`;
+    });
+    return g + `</svg><div class="small muted"><span class="in">■</span> доходы · <span class="out">■</span> расходы</div>`;
+  }
+
+  function catSheet(c) {
+    const list = monthTx(S.month).filter((t) => t.type === 'expense' && (t.cat || 'Без категории') === c).sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount);
+    sheet(c, `<div class="muted small">${monthName(S.month)} · операций: ${list.length} · <b class="num">${money(sum(list, (t) => t.amount))}</b></div>` + list.map((t) => `<button type="button" class="tx expense" data-edit="${t.id}"><div class="grow"><div class="trunc"><b>${esc(t.note || t.cat)}</b></div><div class="small muted">${fmtDate(t.date)} · ${esc(acctName(t.acct))}</div></div><div class="num out"><b>−${money(t.amount)}</b></div></button>`).join(''));
   }
 
   function dayChart(list) {
@@ -467,7 +498,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       h += `<div class="card"><div class="row between"><span class="muted small">Следующий платёж · №${ms.next + 1} из ${PAY.length}</span><span class="pill ${st}">${daysText(ms.left)}</span></div>
         <div class="big num">${money(p[3])}</div><div style="margin-top:4px"><b>${fmtDate(p[0])}</b></div>
         <div class="grid2 small" style="margin-top:12px"><div><div class="muted">Основной долг</div><b class="num">${money(p[1])}</b></div><div><div class="muted">Проценты</div><b class="num">${money(p[2])}</b></div></div>
-        <div class="btns" style="margin-top:14px"><button class="btn primary" data-sid="${ms.next}">Отметить оплаченным</button></div></div>`;
+        <div class="btns" style="margin-top:14px"><button class="btn primary" data-sid="${ms.next}">Отметить оплаченным</button><button class="btn" data-act="ics">В календарь</button></div></div>`;
     } else h += `<div class="card empty"><b>Все платежи выполнены</b>Ипотека закрыта.</div>`;
     if (overdueIdx.length > 1 || (overdueIdx.length === 1 && ms.paidCount === 0)) h += `<div class="notice">Платежей с прошедшей датой без отметки: ${overdueIdx.length}. <button class="chip" data-act="markpast" style="margin-top:8px">Отметить все прошедшие оплаченными</button></div>`;
     const pctN = ms.paidCount / PAY.length * 100, pctP = ms.principalPaid / ms.principalAll * 100;
@@ -476,6 +507,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <div class="row between small muted" style="margin-top:6px"><span>Оплачено ${ms.paidCount} из ${PAY.length} платежей</span><span>${pctN.toFixed(1)}%</span></div>
       <div class="grid2" style="margin-top:14px"><div><div class="muted small">Основной долг, остаток</div><div class="mid num">${money(ms.principalAll - ms.principalPaid, 0)}</div></div><div><div class="muted small">Проценты, остаток</div><div class="mid num out">${money(ms.interestLeft, 0)}</div></div></div>
       <div class="small muted" style="margin-top:12px">Всего к выплате ${money(ms.tot, 0)} · последний платёж ${fmtDate(lastP[0])}</div></div>`;
+    h += `<div class="card"><h2>Досрочные платежи</h2><div class="small muted" style="margin-bottom:10px">Сколько сэкономишь, если платить больше. Расчёт приблизительный: банк считает проценты по дням.</div><div class="grid2">${field('Добавлять в месяц', `<input id="xm" inputmode="decimal" value="${S.extra.monthly || ''}" placeholder="0">`)}${field('Внести сразу', `<input id="xl" inputmode="decimal" value="${S.extra.lump || ''}" placeholder="0">`)}</div><div id="xres" style="margin-top:12px">${extraResult()}</div></div>`;
     const years = [...new Set(PAY.map((p) => p[0].slice(0, 4)))];
     h += `<div class="row"><select id="myear" class="search" style="flex:1;padding-inline:12px">${years.map((y) => `<option value="${y}" ${S.myear === y ? 'selected' : ''}>${y}</option>`).join('')}<option value="all" ${S.myear === 'all' ? 'selected' : ''}>Все годы</option></select></div>`;
     h += `<div class="chips">${[['unpaid', 'Не оплачено'], ['paid', 'Оплачено'], ['all', 'Все']].map((c) => `<button class="chip ${S.mstat === c[0] ? 'on' : ''}" data-mstat="${c[0]}">${c[1]}</button>`).join('')}</div>`;
@@ -487,6 +519,27 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       return `<button class="listrow" ${rowBtn} data-sid="${i}"><div class="grow"><b>${fmtDate(p[0])}</b><div class="small muted num">№${i + 1} · долг ${money(p[1], 0)} · % ${money(p[2], 0)}</div></div><div style="text-align:right"><div class="num"><b>${money(p[3], 0)}</b></div>${pill}</div></button>`;
     }).join('') : `<div class="small muted">Тут пусто.</div>`) + `</div>`;
     return h;
+  }
+
+  function simulate(bal, rate, pay, extra, lump) {
+    let b = bal - lump, n = 0, interest = 0;
+    while (b > 0.5 && n < 700) {
+      const i = b * rate / 1200;
+      if (pay + extra <= i) return null;
+      interest += i; b = b + i - pay - extra; n++;
+    }
+    return { n, interest };
+  }
+  function extraResult() {
+    const ms = mtgState(); if (ms.next < 0) return '';
+    const x = S.extra;
+    if (!(x.monthly > 0 || x.lump > 0)) return '<div class="small muted">Введи сумму, и я покажу разницу.</div>';
+    const bal = ms.principalAll - ms.principalPaid, pay = PAY[1][3];
+    const base = simulate(bal, MTG_RATE, pay, 0, 0), r = simulate(bal, MTG_RATE, pay, x.monthly, x.lump);
+    if (!base || !r) return '<div class="small muted">Не получилось посчитать.</div>';
+    const earlier = Math.max(0, base.n - r.n);
+    const endNew = addPeriod(PAY[PAY.length - 1][0].slice(0, 7), -earlier);
+    return `<div class="grid2"><div><div class="muted small">Закроешь раньше на</div><div class="mid num in">${earlier} мес.</div><div class="small muted">${monthName(endNew)} вместо ${monthName(PAY[PAY.length - 1][0].slice(0, 7))}</div></div><div><div class="muted small">Сэкономишь на процентах</div><div class="mid num in">≈ ${money(Math.max(0, base.interest - r.interest), 0)}</div></div></div>`;
   }
 
   function vTax() {
@@ -530,7 +583,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
         <div class="row between"><div class="grow"><b>${esc(a.name)}</b> <span class="pill">${a.kind === 'savings' ? 'накопления' : 'текущий'}</span></div></div>
         <div class="mid num" style="margin-top:6px">${money(b)}</div>
         <div class="small ${d >= 0 ? 'in' : 'out'} num">${d >= 0 ? '+' : ''}${money(d, 0)} в этом месяце</div>
-        ${goal > 0 ? `<div class="bar in" style="margin-top:10px"><i style="width:${Math.max(0, Math.min(100, b / goal * 100))}%"></i></div><div class="small muted" style="margin-top:4px">Цель ${money(goal, 0)} · ${Math.max(0, Math.round(b / goal * 100))}% · осталось ${money(Math.max(0, goal - b), 0)}</div>` : ''}
+        ${goal > 0 ? `<div class="bar in" style="margin-top:10px"><i style="width:${Math.max(0, Math.min(100, b / goal * 100))}%"></i></div><div class="small muted" style="margin-top:4px">Цель ${money(goal, 0)} · ${Math.max(0, Math.round(b / goal * 100))}% · осталось ${money(Math.max(0, goal - b), 0)}</div>${a.goalDate && goal > b ? `<div class="small" style="margin-top:2px">Чтобы успеть к ${fmtDate(a.goalDate)}, откладывай <b class="num">${money((goal - b) / Math.max(1, (Number(a.goalDate.slice(0, 4)) * 12 + Number(a.goalDate.slice(5, 7))) - (new Date().getFullYear() * 12 + new Date().getMonth() + 1)), 0)}</b> в месяц</div>` : ''}` : ''}
       </button>`;
     });
     h += `<div class="btns"><button class="btn primary" data-act="addacc">+ Счёт</button><button class="btn" data-act="transfer">⇄ Перевод между счетами</button></div>`;
@@ -594,14 +647,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
   function accForm(a) {
     const editing = !!a;
-    a = a || { id: 'a' + Date.now().toString(36), name: '', kind: 'savings', opening: 0, goal: 0 };
+    a = a || { id: 'a' + Date.now().toString(36), name: '', kind: 'savings', opening: 0, goal: 0, goalDate: '' };
     const body = `${field('Название', `<input name="name" value="${esc(a.name)}" placeholder="Например, Накопительный X" required autofocus>`)}
       ${field('Тип', `<select name="kind"><option value="checking" ${a.kind === 'checking' ? 'selected' : ''}>Текущий</option><option value="savings" ${a.kind === 'savings' ? 'selected' : ''}>Накопительный</option></select>`)}
       ${field('Сколько там сейчас (стартовый остаток)', `<input name="opening" inputmode="decimal" value="${a.opening || ''}" placeholder="0">`)}
       ${field('Цель накопления (необязательно)', `<input name="goal" inputmode="decimal" value="${a.goal || ''}" placeholder="0">`)}
+      ${field('К какой дате (необязательно)', `<input type="date" name="goalDate" value="${a.goalDate || ''}">`)}
       ${editing && S.cfg.accounts.length > 1 ? `<button type="button" class="btn danger" id="delacc">Удалить счёт</button>` : ''}`;
     sheet(editing ? 'Счёт' : 'Новый счёт', body, (f) => {
-      const o = { id: a.id, name: f.name.value.trim() || 'Счёт', kind: f.kind.value, opening: num(f.opening.value), goal: num(f.goal.value) };
+      const o = { id: a.id, name: f.name.value.trim() || 'Счёт', kind: f.kind.value, opening: num(f.opening.value), goal: num(f.goal.value), goalDate: f.goalDate.value };
       const i = S.cfg.accounts.findIndex((x) => x.id === a.id);
       if (i >= 0) S.cfg.accounts[i] = o; else S.cfg.accounts.push(o);
       saveCfg();
@@ -666,6 +720,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <div class="btns"><button type="button" class="btn" data-act="budgets">Лимиты по категориям</button><button type="button" class="btn" data-act="recurring">Регулярные платежи</button></div>
       <button type="button" class="btn block" data-act="import">Импорт из банка (CSV)</button>
       <div class="btns"><button type="button" class="btn" data-act="backup">Сохранить копию данных</button><button type="button" class="btn" data-act="restore">Загрузить копию</button></div>
+      <div class="btns"><button type="button" class="btn" data-act="pin">PIN-код</button><button type="button" class="btn" data-act="ics">Даты в календарь</button></div>
       <div class="small muted">${S.db ? 'Данные сохраняются в облаке страницы и видны Claude, поэтому можно просто прислать выписку в чат.' : 'Данные хранятся только на этом телефоне.'}</div>`, (f) => { S.cfg.cur = f.cur.value.trim() || '$'; saveCfg(); });
   }
 
@@ -784,6 +839,59 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     });
   }
 
+  function download(name, text, type) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  }
+  function calendarFile() {
+    const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Finance//RU//', 'CALSCALE:GREGORIAN'];
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
+    const ev = (uidv, date, title) => L.push('BEGIN:VEVENT', 'UID:' + uidv + '@finance', 'DTSTAMP:' + stamp, 'DTSTART;VALUE=DATE:' + date.replace(/-/g, ''), 'SUMMARY:' + title,
+      'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + title, 'TRIGGER:-P2DT15H', 'END:VALARM', 'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + title, 'TRIGGER:-PT15H', 'END:VALARM', 'END:VEVENT');
+    const pm = paidMap(), rm = recvMap(); let n = 0;
+    PAY.forEach((p, i) => { if (!pm[i] && p[0] >= today()) { ev('m' + i, p[0], 'Ипотека ' + Math.round(p[3]) + ' ' + cur()); n++; } });
+    taxRefunds().forEach((r) => { if (!rm[r.key] && r.date >= today()) { ev('t' + r.key, r.date, 'Возврат налога около ' + Math.round(r.amount) + ' ' + cur()); n++; } });
+    L.push('END:VCALENDAR');
+    try { download('finance-calendar.ics', L.join('\r\n'), 'text/calendar'); toast('Файл календаря: событий ' + n); } catch (e) { toast('Не получилось создать файл'); }
+  }
+
+  /* PIN lock (a screen guard on this device, not encryption) */
+  const getPin = () => { try { return localStorage.getItem('fin_pin') || ''; } catch (e) { return ''; } };
+  async function hashPin(p) {
+    try { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('fin:' + p)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
+    catch (e) { return 'x' + p.split('').reverse().join(''); }
+  }
+  let lockBuf = '';
+  function drawLock(msg) {
+    const el = $('#lock'); if (!el) return;
+    el.innerHTML = `<div class="mid">Введи PIN</div><div class="dots">${[0, 1, 2, 3].map((i) => `<i class="${i < lockBuf.length ? 'on' : ''}"></i>`).join('')}</div><div class="small out" style="min-height:18px">${msg || ''}</div><div class="keys">${'123456789'.split('').map((k) => `<button type="button" data-key="${k}">${k}</button>`).join('')}<span></span><button type="button" data-key="0">0</button><button type="button" data-key="del">⌫</button></div>`;
+  }
+  function showLock() {
+    if (!getPin()) return;
+    lockBuf = '';
+    if (!$('#lock')) { const el = document.createElement('div'); el.id = 'lock'; el.className = 'lockscreen'; document.body.appendChild(el); }
+    drawLock();
+  }
+  async function lockKey(k) {
+    if (k === 'del') lockBuf = lockBuf.slice(0, -1); else if (lockBuf.length < 4) lockBuf += k;
+    drawLock();
+    if (lockBuf.length === 4) {
+      if ((await hashPin(lockBuf)) === getPin()) { $('#lock').remove(); lockBuf = ''; }
+      else { lockBuf = ''; drawLock('Неверный PIN'); }
+    }
+  }
+  function pinSheet() {
+    const has = !!getPin();
+    sheet('PIN-код', `${field(has ? 'Новый PIN (4 цифры)' : 'PIN (4 цифры)', `<input name="pin" inputmode="numeric" maxlength="4" pattern="[0-9]{4}" autofocus>`)}
+      <div class="small muted">Закрывает приложение на этом устройстве, когда ты вернёшься в него через минуту и позже. Это защита от посторонних взглядов, а не шифрование.</div>
+      ${has ? '<button type="button" class="btn danger" id="rmpin">Убрать PIN</button>' : ''}`, async (f) => {
+      if (!/^\d{4}$/.test(f.pin.value)) { toast('Нужны 4 цифры'); return false; }
+      try { localStorage.setItem('fin_pin', await hashPin(f.pin.value)); toast('PIN установлен'); } catch (e) { toast('Не получилось сохранить PIN'); }
+    });
+    const r = $('#rmpin'); if (r) r.addEventListener('click', () => { try { localStorage.removeItem('fin_pin'); } catch (e) {} closeSheet(); toast('PIN убран'); });
+  }
+
   function backup() {
     const data = JSON.stringify({ app: 'finance', v: 1, tx: S.tx, cfg: S.cfg });
     try {
@@ -791,7 +899,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
       a.download = 'finance-backup-' + today() + '.json';
       document.body.appendChild(a); a.click(); a.remove();
-      toast('Копия сохранена в загрузки');
+      try { localStorage.setItem('fin_lb', today()); } catch (e) {}
+      toast('Копия сохранена в загрузки'); render();
     } catch (e) { toast('Не получилось сохранить файл'); }
   }
   function restore() {
@@ -823,6 +932,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const sd = t.closest('[data-sid]'); if (sd) { const i = Number(sd.dataset.sid); const x = paidMap()[i]; if (x) txForm(x); else payRow(i); return; }
     const rk = t.closest('[data-rkey]'); if (rk) { const x = recvMap()[rk.dataset.rkey]; if (x) txForm(x); else { const r = taxRefunds().find((y) => y.key === rk.dataset.rkey); if (r) recvRow(r); } return; }
     const ms = t.closest('[data-mstat]'); if (ms) { S.mstat = ms.dataset.mstat; render(); return; }
+    const ct = t.closest('[data-cat]'); if (ct) { catSheet(ct.dataset.cat); return; }
+    const kk = t.closest('[data-key]'); if (kk) { lockKey(kk.dataset.key); return; }
     const ac = t.closest('[data-acc]'); if (ac) { accForm(S.cfg.accounts.find((a) => a.id === ac.dataset.acc)); return; }
     const a = t.closest('[data-act]'); if (!a) return;
     const act = a.dataset.act;
@@ -838,6 +949,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     else if (act === 'recurring') recurring();
     else if (act === 'import') importSheet();
     else if (act === 'backup') backup();
+    else if (act === 'pin') pinSheet();
+    else if (act === 'ics') calendarFile();
     else if (act === 'restore') restore();
     else if (act === 'delrec') { S.cfg.recurring = S.cfg.recurring.filter((r) => r.id !== a.dataset.id); saveCfg(); recurring(); }
     else if (act === 'payrec') {
@@ -851,9 +964,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     if (e.target.id === 'tyear') { S.tyear = e.target.value; render(); }
   });
   document.addEventListener('input', (e) => {
+    if (e.target.id === 'xm' || e.target.id === 'xl') { S.extra[e.target.id === 'xm' ? 'monthly' : 'lump'] = num(e.target.value); const r = $('#xres'); if (r) r.innerHTML = extraResult(); return; }
     if (e.target.id === 'q') { S.q = e.target.value; const pos = e.target.selectionStart; render(); const el = $('#q'); if (el) { el.focus(); el.setSelectionRange(pos, pos); } }
   });
 
+  let hiddenAt = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hiddenAt = Date.now();
+    else if (getPin() && hiddenAt && Date.now() - hiddenAt > 60000) showLock();
+  });
+  showLock();
   boot();
 })();
 </script>
