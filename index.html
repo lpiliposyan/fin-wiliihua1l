@@ -182,7 +182,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     ],
     budgets: {},
     tax: { cap: 750000, months: [1, 4, 7, 10] },
-    recurring: []
+    recurring: [], plans: [], budget: 0
   });
 
   const MTG_RATE = 12.75;
@@ -212,6 +212,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   const daysText = (n) => n === 0 ? 'сегодня' : n === 1 ? 'завтра' : n > 1 ? 'через ' + n + ' дн.' : 'просрочено на ' + (-n) + ' дн.';
   const acctName = (id) => { const a = S.cfg.accounts.find((x) => x.id === id); return a ? a.name : '—'; };
   const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+  const eff = (t) => t.half ? t.amount / 2 : t.amount;
+  const monthsUntil = (d) => Math.max(1, (Number(d.slice(0, 4)) * 12 + Number(d.slice(5, 7))) - (new Date().getFullYear() * 12 + new Date().getMonth() + 1));
+  const tagsOf = (t) => (t.tags || '').split(/[,#\s]+/).filter(Boolean).map((x) => x.toLowerCase());
+  const getTheme = () => { try { return localStorage.getItem('fin_theme') || 'auto'; } catch (e) { return 'auto'; } };
+  function applyTheme() { const v = getTheme(); if (v === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', v); }
+  function setTheme(v) { try { localStorage.setItem('fin_theme', v); } catch (e) {} applyTheme(); }
   const allCats = () => {
     const set = new Set(DEFAULT_CATS);
     S.tx.forEach((t) => { if (t.cat && t.type === 'expense') set.add(t.cat); });
@@ -279,13 +285,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   /* ---------- computed ---------- */
   const monthTx = (ym) => S.tx.filter((t) => t.date && t.date.slice(0, 7) === ym);
   function totals(list) {
-    const inc = sum(list.filter((t) => t.type === 'income'), (t) => t.amount);
-    const exp = sum(list.filter((t) => t.type === 'expense'), (t) => t.amount);
+    const inc = sum(list.filter((t) => t.type === 'income' && t.kind !== 'settle'), (t) => t.amount);
+    const exp = sum(list.filter((t) => t.type === 'expense' && t.kind !== 'settle'), eff);
     return { inc, exp, net: inc - exp };
   }
   function byCat(list) {
     const m = {};
-    list.filter((t) => t.type === 'expense').forEach((t) => { const c = t.cat || 'Без категории'; m[c] = (m[c] || 0) + t.amount; });
+    list.filter((t) => t.type === 'expense' && t.kind !== 'settle').forEach((t) => { const c = t.cat || 'Без категории'; m[c] = (m[c] || 0) + eff(t); });
     return Object.entries(m).sort((a, b) => b[1] - a[1]);
   }
   function balance(a) {
@@ -390,6 +396,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       ${tt.inc > 0 ? `<div class="small muted" style="margin-top:12px">Отложено ${Math.max(0, Math.round(tt.net / tt.inc * 100))}% дохода</div>` : ''}
     </div>`;
 
+    if (S.cfg.budget > 0) {
+      const left = S.cfg.budget - tt.exp, dim = daysInMonth(S.month), dn = new Date().getDate();
+      const daysLeft = dim - dn + 1;
+      h += `<div class="card"><h2>Бюджет на месяц</h2><div class="row between"><span class="mid num ${left < 0 ? 'out' : 'in'}">${left < 0 ? 'Перебор ' + money(-left, 0) : 'Осталось ' + money(left, 0)}</span><span class="muted small num">из ${money(S.cfg.budget, 0)}</span></div>
+        <div class="bar ${left < 0 ? 'over' : ''}" style="margin-top:10px"><i style="width:${Math.min(100, tt.exp / S.cfg.budget * 100)}%"></i></div>
+        ${isNow && left > 0 ? `<div class="small muted" style="margin-top:8px">Можно тратить около <b class="num">${money(left / daysLeft, 0)}</b> в день до конца месяца (${daysLeft} дн.)</div>` : ''}</div>`;
+    } else h += `<div class="card"><div class="small muted">Задай, сколько можно тратить в месяц, и я покажу, сколько остаётся на каждый день.</div><button class="chip" data-act="settings" style="margin-top:8px">Задать бюджет</button></div>`;
     // upcoming
     const up = [];
     const ms = mtgState();
@@ -409,6 +422,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
       h += `<div class="card"><h2>По дням</h2>${dayChart(list)}</div>`;
       h += `<div class="card"><h2>Последние 6 месяцев</h2>${monthChart()}</div>`;
+      const tg = tagStats(list);
+      if (tg.length) h += `<div class="card"><h2>Теги</h2><div class="chips" style="flex-wrap:wrap">${tg.map(([g, v]) => `<button class="chip" data-tag="${esc(g)}">#${esc(g)} ${money(v, 0)}</button>`).join('')}</div></div>`;
 
       // insights
       const ins = [];
@@ -426,6 +441,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const tot = sum(S.cfg.accounts, balance);
     const sav = sum(S.cfg.accounts.filter((a) => a.kind === 'savings'), balance);
     h += `<div class="card"><h2>Всего на счетах</h2><div class="mid num">${money(tot, 0)}</div><div class="small muted">из них накопления ${money(sav, 0)}</div></div>`;
+    h += `<button class="btn block" data-act="report">Итоги месяца и года</button>`;
     return h;
   }
 
@@ -446,14 +462,79 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   }
 
   function catSheet(c) {
-    const list = monthTx(S.month).filter((t) => t.type === 'expense' && (t.cat || 'Без категории') === c).sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount);
-    sheet(c, `<div class="muted small">${monthName(S.month)} · операций: ${list.length} · <b class="num">${money(sum(list, (t) => t.amount))}</b></div>` + list.map((t) => `<button type="button" class="tx expense" data-edit="${t.id}"><div class="grow"><div class="trunc"><b>${esc(t.note || t.cat)}</b></div><div class="small muted">${fmtDate(t.date)} · ${esc(acctName(t.acct))}</div></div><div class="num out"><b>−${money(t.amount)}</b></div></button>`).join(''));
+    const list = monthTx(S.month).filter((t) => t.type === 'expense' && t.kind !== 'settle' && (t.cat || 'Без категории') === c).sort((a, b) => b.date.localeCompare(a.date) || b.amount - a.amount);
+    sheet(c, `<div class="muted small">${monthName(S.month)} · операций: ${list.length} · <b class="num">${money(sum(list, eff))}</b></div>` + list.map((t) => `<button type="button" class="tx expense" data-edit="${t.id}"><div class="grow"><div class="trunc"><b>${esc(t.note || t.cat)}</b></div><div class="small muted">${fmtDate(t.date)} · ${esc(acctName(t.acct))}</div></div><div class="num out"><b>−${money(eff(t))}</b>${t.half ? '<div class="small muted">половина</div>' : ''}</div></button>`).join(''));
+  }
+
+  function tagStats(list) {
+    const m = {};
+    list.filter((t) => t.type === 'expense' && t.kind !== 'settle').forEach((t) => tagsOf(t).forEach((g) => { m[g] = (m[g] || 0) + eff(t); }));
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }
+  function tagSheet(tag) {
+    const list = monthTx(S.month).filter((t) => t.type === 'expense' && tagsOf(t).includes(tag)).sort((a, b) => b.date.localeCompare(a.date));
+    sheet('#' + tag, `<div class="muted small">${monthName(S.month)} · <b class="num">${money(sum(list, eff))}</b></div>` + list.map((t) => `<button type="button" class="tx expense" data-edit="${t.id}"><div class="grow"><div class="trunc"><b>${esc(t.note || t.cat)}</b></div><div class="small muted">${fmtDate(t.date)} · ${esc(t.cat || '')}</div></div><div class="num out"><b>−${money(eff(t))}</b></div></button>`).join(''));
+  }
+
+  function debts() {
+    const m = {};
+    S.tx.forEach((t) => {
+      if (!t.partner) return;
+      if (t.kind === 'settle') m[t.partner] = (m[t.partner] || 0) + (t.type === 'income' ? -t.amount : t.amount);
+      else if (t.half && t.type === 'expense') m[t.partner] = (m[t.partner] || 0) + t.amount / 2;
+    });
+    return m;
+  }
+  function settleSheet() {
+    const names = Object.keys(debts());
+    sheet('Взаиморасчёт', `${field('С кем', `<input name="who" list="wl" value="${esc(names[0] || '')}" required><datalist id="wl">${names.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>`)}
+      ${field('Что произошло', `<select name="dir"><option value="in">Мне вернули деньги</option><option value="out">Я вернула деньги</option></select>`)}
+      ${field('Сумма', `<input class="amount num" name="amount" inputmode="decimal" required>`)}
+      <div class="grid2">${field('Дата', `<input type="date" name="date" value="${today()}" required>`)}${field('Счёт', `<select name="acct">${acctOptions()}</select>`)}</div>`, (f) => {
+      const amount = num(f.amount.value);
+      if (!(amount > 0) || !f.who.value.trim()) { toast('Нужны имя и сумма'); return false; }
+      saveTx({ id: uid(), type: f.dir.value === 'in' ? 'income' : 'expense', kind: 'settle', partner: f.who.value.trim(), cat: 'Взаиморасчёт', note: 'Взаиморасчёт: ' + f.who.value.trim(), amount, date: f.date.value, acct: f.acct.value, ts: Date.now() });
+      toast('Записано');
+    });
+  }
+
+  let lastReport = '';
+  function reportSheet(mode) {
+    mode = mode || 'month';
+    const ym = S.month, yr = ym.slice(0, 4);
+    const sel = (key, y, p) => (t) => t.date && t.kind !== 'settle' && (mode === 'month' ? t.date.slice(0, 7) === p : t.date.slice(0, 4) === y);
+    const list = S.tx.filter(sel('', yr, ym)), prev = S.tx.filter(sel('', String(Number(yr) - 1), addPeriod(ym, -1)));
+    const tt = totals(list), pt = totals(prev);
+    const cats = byCat(list).slice(0, 5);
+    const big = list.filter((t) => t.type === 'expense').sort((a, b) => eff(b) - eff(a))[0];
+    const title = mode === 'month' ? monthName(ym) : yr + ' год';
+    const lines = ['Итоги: ' + title, 'Доходы: ' + money(tt.inc, 0), 'Расходы: ' + money(tt.exp, 0) + (pt.exp > 0 ? ' (' + (tt.exp >= pt.exp ? '+' : '') + Math.round((tt.exp / pt.exp - 1) * 100) + '% к прошлому периоду)' : ''), 'Осталось: ' + money(tt.net, 0) + (tt.inc > 0 ? ' (' + Math.round(tt.net / tt.inc * 100) + '% дохода)' : '')];
+    if (cats.length) { lines.push('Больше всего ушло на:'); cats.forEach(([c, v]) => lines.push('  ' + c + ': ' + money(v, 0) + (tt.exp ? ' (' + Math.round(v / tt.exp * 100) + '%)' : ''))); }
+    if (big) lines.push('Самая большая трата: ' + (big.note || big.cat) + ', ' + money(eff(big), 0) + ', ' + fmtDate(big.date));
+    lines.push('Операций: ' + list.length);
+    lastReport = lines.join('\n');
+    sheet('Итоги', `<div class="seg"><button type="button" class="${mode === 'month' ? 'on' : ''}" data-rep="month">Месяц</button><button type="button" class="${mode === 'year' ? 'on' : ''}" data-rep="year">Год</button></div>
+      <div class="card" style="white-space:pre-wrap">${esc(lastReport)}</div><button type="button" class="btn" data-act="copyrep">Скопировать текст</button>`);
+  }
+
+  function planForm(p) {
+    const editing = !!p;
+    p = p || { id: 'p' + Date.now().toString(36), name: '', amount: 0, date: '', saved: 0 };
+    sheet(editing ? 'Цель' : 'Новая цель', `${field('Что планируешь', `<input name="name" value="${esc(p.name)}" placeholder="Отпуск, ремонт, техника" required autofocus>`)}
+      ${field('Сколько нужно', `<input name="amount" inputmode="decimal" value="${p.amount || ''}" required>`)}
+      ${field('Уже отложено', `<input name="saved" inputmode="decimal" value="${p.saved || ''}" placeholder="0">`)}
+      ${field('К какой дате', `<input type="date" name="date" value="${p.date || ''}">`)}
+      ${editing ? '<button type="button" class="btn danger" id="delplan">Удалить цель</button>' : ''}`, (f) => {
+      const o = { id: p.id, name: f.name.value.trim(), amount: num(f.amount.value), saved: num(f.saved.value), date: f.date.value };
+      const list = (S.cfg.plans || []).filter((x) => x.id !== p.id); list.push(o); S.cfg.plans = list; saveCfg();
+    });
+    const d = $('#delplan'); if (d) d.addEventListener('click', () => { S.cfg.plans = S.cfg.plans.filter((x) => x.id !== p.id); saveCfg(); closeSheet(); });
   }
 
   function dayChart(list) {
     const dim = daysInMonth(S.month);
     const vals = Array(dim).fill(0);
-    list.filter((t) => t.type === 'expense').forEach((t) => { vals[Number(t.date.slice(8)) - 1] += t.amount; });
+    list.filter((t) => t.type === 'expense' && t.kind !== 'settle').forEach((t) => { vals[Number(t.date.slice(8)) - 1] += eff(t); });
     const max = Math.max(...vals, 1);
     const W = 300, H = 90, L = 4, B = 14, bw = (W - L) / dim;
     let s = `<svg viewBox="0 0 ${W} ${H + B}" width="100%" role="img" aria-label="Расходы по дням"><line x1="${L}" x2="${W}" y1="${H}" y2="${H}" stroke="var(--line)"/>`;
@@ -467,7 +548,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     let list = monthTx(S.month);
     if (S.filter !== 'all') list = list.filter((t) => t.type === S.filter);
     const qq = S.q.trim().toLowerCase();
-    if (qq) list = list.filter((t) => ((t.note || '') + ' ' + (t.cat || '') + ' ' + acctName(t.acct)).toLowerCase().includes(qq));
+    if (qq) list = list.filter((t) => ((t.note || '') + ' ' + (t.cat || '') + ' ' + (t.tags || '') + ' ' + acctName(t.acct)).toLowerCase().includes(qq));
     list.sort((a, b) => b.date.localeCompare(a.date) || (b.ts || 0) - (a.ts || 0));
     let h = monthBar();
     h += `<input class="search" id="q" type="search" placeholder="Поиск по заметке или категории" value="${esc(S.q)}">`;
@@ -480,7 +561,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       if (t.date !== last) { last = t.date; const dayList = list.filter((x) => x.date === t.date); const dt = totals(dayList); h += `<div class="day"><span>${fmtDate(t.date)}</span><span class="num">${dt.exp ? '−' + money(dt.exp, 0) : ''}</span></div>`; }
       const sign = t.type === 'income' ? '+' : t.type === 'expense' ? '−' : '';
       const title = t.type === 'transfer' ? `${esc(acctName(t.acct))} → ${esc(acctName(t.to))}` : esc(t.note || t.cat || 'Без названия');
-      const sub = t.type === 'transfer' ? 'Перевод' : esc((t.note ? (t.cat || '') + ' · ' : '') + acctName(t.acct));
+      const sub = t.type === 'transfer' ? 'Перевод' : esc((t.note ? (t.cat || '') + ' · ' : '') + acctName(t.acct)) + (t.half ? ' · пополам с ' + esc(t.partner) : '') + (t.tags ? ' · #' + esc(tagsOf(t).join(' #')) : '');
       h += `<button class="tx ${t.type}" data-edit="${t.id}"><div class="dot">${t.type === 'income' ? '↓' : t.type === 'expense' ? '↑' : '⇄'}</div><div class="grow"><div class="trunc"><b>${title}</b></div><div class="small muted trunc">${sub}</div></div><div class="num ${t.type === 'income' ? 'in' : t.type === 'expense' ? 'out' : ''}"><b>${sign}${money(t.amount)}</b></div></button>`;
     });
     return h;
@@ -563,6 +644,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     h += `<div class="card small"><b>Как считается.</b> За каждый период берутся проценты по ипотеке из графика. Если они больше ${money(cap, 0)}, возвращают ${money(cap, 0)}. Если меньше, возвращают столько же, сколько заплачено процентами. Деньги приходят в месяцы: ${(S.cfg.tax.months || []).map((m) => MONTHS[m - 1]).join(', ')}. <button class="chip" data-act="taxsetup">Изменить</button></div>`;
     const years = [...new Set(list.map((r) => r.key.slice(0, 4)))];
     h += `<select id="tyear" class="search" style="padding-inline:12px">${years.map((y) => `<option value="${y}" ${S.tyear === y ? 'selected' : ''}>${y}</option>`).join('')}</select>`;
+    const yl = list.filter((r) => r.key.startsWith(S.tyear));
+    const yInt = sum(yl, (r) => r.interest), yAmt = sum(yl, (r) => r.amount), yGot = sum(yl.filter((r) => rm[r.key]), (r) => rm[r.key].amount);
+    h += `<div class="card"><h2>Итоги ${S.tyear} года</h2><div class="grid2"><div><div class="muted small">Проценты по ипотеке</div><div class="mid num">${money(yInt, 0)}</div></div><div><div class="muted small">Вернут всего</div><div class="mid num in">${money(yAmt, 0)}</div></div></div><div class="small muted" style="margin-top:10px">Получено ${money(yGot, 0)}, ещё ждать ${money(yAmt - yGot, 0)}.${yInt > yAmt ? ' Выше лимита ' + money(yInt - yAmt, 0) + ' процентов не вернётся.' : ''}</div></div>`;
     h += `<div class="card">` + list.filter((r) => r.key.startsWith(S.tyear)).map((r) => {
       const got = rm[r.key];
       return `<button class="listrow" ${rowBtn} data-rkey="${r.key}"><div class="grow"><b style="text-transform:capitalize">${monthName(r.key)}</b><div class="small muted num">проценты ${money(r.interest, 0)}${r.capped ? ' · лимит' : ''}</div></div><div style="text-align:right"><div class="num in"><b>+${money(got ? got.amount : r.amount, 0)}</b></div>${got ? '<span class="pill good">Получено</span>' : r.date < today() ? '<span class="pill warn">Ждём</span>' : '<span class="pill">Впереди</span>'}</div></button>`;
@@ -587,6 +671,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       </button>`;
     });
     h += `<div class="btns"><button class="btn primary" data-act="addacc">+ Счёт</button><button class="btn" data-act="transfer">⇄ Перевод между счетами</button></div>`;
+    const cm = [1, 2, 3].map((k) => totals(monthTx(addPeriod(today().slice(0, 7), -k))).exp).filter((v) => v > 0);
+    h += `<div class="card"><h2>Финансовая подушка</h2>`;
+    if (cm.length) { const avg = sum(cm, (x) => x) / cm.length; h += `<div class="mid num">${(sav / avg).toFixed(1)} мес.</div><div class="small muted">на накоплениях. На всех счетах ${(tot / avg).toFixed(1)} мес. Средние расходы ${money(avg, 0)} в месяц (по прошлым ${cm.length} мес.).</div>`; }
+    else h += `<div class="small muted">Появится, когда будут расходы за прошлые месяцы.</div>`;
+    h += `</div>`;
+    const plans = S.cfg.plans || [];
+    h += `<div class="card"><h2>Планы на крупные траты</h2>` + (plans.length ? plans.map((p) => {
+      const pct = p.amount ? Math.max(0, Math.min(100, p.saved / p.amount * 100)) : 0;
+      return `<button class="cat" data-plan="${p.id}" style="background:none;border:0;width:100%;text-align:left;padding-inline:0"><div class="row between"><b class="trunc">${esc(p.name)}</b><span class="num small">${money(p.saved, 0)} из ${money(p.amount, 0)}</span></div><div class="bar in"><i style="width:${pct}%"></i></div>${p.date && p.amount > p.saved ? `<div class="small muted">К ${fmtDate(p.date)}: откладывай ${money((p.amount - p.saved) / monthsUntil(p.date), 0)} в месяц</div>` : ''}</button>`;
+    }).join('') : '<div class="small muted">Отпуск, ремонт, техника: укажи сумму и дату.</div>') + `<button class="chip" data-act="addplan" style="margin-top:8px">+ Добавить цель</button></div>`;
+    const dm = debts();
+    if (Object.keys(dm).length) {
+      h += `<div class="card"><h2>Общие расходы</h2>` + Object.entries(dm).map(([n, v]) => `<div class="listrow"><div class="grow"><b>${esc(n)}</b></div><div class="num ${v > 0 ? 'in' : 'out'}"><b>${Math.abs(v) < 0.5 ? 'всё поровну' : v > 0 ? 'должен(на) тебе ' + money(v, 0) : 'ты должна ' + money(-v, 0)}</b></div></div>`).join('') + `<button class="chip" data-act="settle" style="margin-top:8px">Отметить возврат</button></div>`;
+    }
     return h;
   }
 
@@ -620,6 +718,8 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       <div id="toWrap">${field('На счёт', `<select name="to">${acctOptions(t.to || (S.cfg.accounts[1] && S.cfg.accounts[1].id))}</select>`)}</div>
       <div id="catWrap">${field('Категория', `<input name="cat" list="catlist" value="${esc(t.cat || '')}" placeholder="Например, Продукты"><datalist id="catlist"></datalist>`)}</div>
       ${field('Заметка', `<input name="note" value="${esc(t.note || '')}" placeholder="Где или за что">`)}
+      ${field('Теги (необязательно)', `<input name="tags" value="${esc(t.tags || '')}" placeholder="отпуск, подарки">`)}
+      <div id="splitWrap">${field('Делили пополам с (необязательно)', `<input name="partner" value="${esc(t.kind === 'settle' ? '' : t.partner || '')}" placeholder="Имя">`)}</div>
       ${editing ? `<button type="button" class="btn danger" id="delbtn">Удалить операцию</button>` : ''}`;
     const form = sheet(editing ? 'Операция' : 'Новая операция', body, (f) => {
       const amount = Math.abs(num(f.amount.value));
@@ -627,10 +727,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
       const o = Object.assign({}, t, { id: t.id || uid(), type, amount, date: f.date.value, acct: f.acct.value, note: f.note.value.trim(), ts: t.ts || Date.now() });
       if (type === 'transfer') { o.to = f.to.value; o.cat = ''; if (o.to === o.acct) { toast('Выбери разные счета'); return false; } }
       else { o.cat = f.cat.value.trim() || 'Прочее'; delete o.to; }
+      o.tags = f.tags.value.trim();
+      if (o.kind !== 'settle') {
+        if (type === 'expense' && f.partner.value.trim()) { o.partner = f.partner.value.trim(); o.half = true; } else { delete o.partner; delete o.half; }
+      }
       saveTx(o);
     });
     const sync = () => {
       form.querySelectorAll('[data-seg]').forEach((b) => b.classList.toggle('on', b.dataset.seg === type));
+      $('#splitWrap').hidden = type !== 'expense' || t.kind === 'settle';
       $('#toWrap').hidden = type !== 'transfer'; $('#catWrap').hidden = type === 'transfer';
       $('#acctlabel').textContent = type === 'transfer' ? 'Со счёта' : 'Счёт';
       $('#catlist').innerHTML = (type === 'income' ? INCOME_CATS : allCats()).map((c) => `<option value="${esc(c)}">`).join('');
@@ -717,11 +822,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   function settings() {
     sheet('Настройки', `
       ${field('Валюта (символ)', `<input name="cur" value="${esc(S.cfg.cur)}" maxlength="4">`)}
+      ${field('Сколько можно тратить в месяц (всего)', `<input name="mb" inputmode="decimal" value="${S.cfg.budget || ''}" placeholder="0">`)}
+      ${field('Тема', `<select name="theme"><option value="auto" ${getTheme() === 'auto' ? 'selected' : ''}>Как в телефоне</option><option value="light" ${getTheme() === 'light' ? 'selected' : ''}>Светлая</option><option value="dark" ${getTheme() === 'dark' ? 'selected' : ''}>Тёмная</option></select>`)}
       <div class="btns"><button type="button" class="btn" data-act="budgets">Лимиты по категориям</button><button type="button" class="btn" data-act="recurring">Регулярные платежи</button></div>
       <button type="button" class="btn block" data-act="import">Импорт из банка (CSV)</button>
       <div class="btns"><button type="button" class="btn" data-act="backup">Сохранить копию данных</button><button type="button" class="btn" data-act="restore">Загрузить копию</button></div>
       <div class="btns"><button type="button" class="btn" data-act="pin">PIN-код</button><button type="button" class="btn" data-act="ics">Даты в календарь</button></div>
-      <div class="small muted">${S.db ? 'Данные сохраняются в облаке страницы и видны Claude, поэтому можно просто прислать выписку в чат.' : 'Данные хранятся только на этом телефоне.'}</div>`, (f) => { S.cfg.cur = f.cur.value.trim() || '$'; saveCfg(); });
+      <div class="small muted">${S.db ? 'Данные сохраняются в облаке страницы и видны Claude, поэтому можно просто прислать выписку в чат.' : 'Данные хранятся только на этом телефоне.'}</div>`, (f) => { S.cfg.cur = f.cur.value.trim() || '֏'; S.cfg.budget = num(f.mb.value); setTheme(f.theme.value); saveCfg(); });
   }
 
   function budgets() {
@@ -934,6 +1041,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const ms = t.closest('[data-mstat]'); if (ms) { S.mstat = ms.dataset.mstat; render(); return; }
     const ct = t.closest('[data-cat]'); if (ct) { catSheet(ct.dataset.cat); return; }
     const kk = t.closest('[data-key]'); if (kk) { lockKey(kk.dataset.key); return; }
+    const tg = t.closest('[data-tag]'); if (tg) { tagSheet(tg.dataset.tag); return; }
+    const pl = t.closest('[data-plan]'); if (pl) { planForm((S.cfg.plans || []).find((x) => x.id === pl.dataset.plan)); return; }
+    const rp = t.closest('[data-rep]'); if (rp) { reportSheet(rp.dataset.rep); return; }
     const ac = t.closest('[data-acc]'); if (ac) { accForm(S.cfg.accounts.find((a) => a.id === ac.dataset.acc)); return; }
     const a = t.closest('[data-act]'); if (!a) return;
     const act = a.dataset.act;
@@ -950,6 +1060,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     else if (act === 'import') importSheet();
     else if (act === 'backup') backup();
     else if (act === 'pin') pinSheet();
+    else if (act === 'report') reportSheet('month');
+    else if (act === 'addplan') planForm();
+    else if (act === 'settle') settleSheet();
+    else if (act === 'copyrep') { try { navigator.clipboard.writeText(lastReport).then(() => toast('Скопировано'), () => toast('Не получилось скопировать')); } catch (e) { toast('Не получилось скопировать'); } }
     else if (act === 'ics') calendarFile();
     else if (act === 'restore') restore();
     else if (act === 'delrec') { S.cfg.recurring = S.cfg.recurring.filter((r) => r.id !== a.dataset.id); saveCfg(); recurring(); }
@@ -973,6 +1087,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     if (document.hidden) hiddenAt = Date.now();
     else if (getPin() && hiddenAt && Date.now() - hiddenAt > 60000) showLock();
   });
+  applyTheme();
   showLock();
   boot();
 })();
