@@ -411,6 +411,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
     const rm0 = recvMap(); const nr = taxRefunds().find((r) => !rm0[r.key]);
     if (nr) up.push(`<button class="listrow" style="background:none;border-left:0;border-right:0;border-bottom:0;width:100%;text-align:left" data-tab="tax"><div class="grow"><b>Возврат налога</b><div class="small muted">${monthName(nr.key)}</div></div><div style="text-align:right"><div class="num in"><b>+${money(nr.amount)}</b></div></div></button>`);
     if (up.length) h += `<div class="card"><h2>Скоро</h2>${up.join('')}</div>`;
+    if (isNow) h += forecastCard();
 
     // categories
     if (cats.length) {
@@ -446,6 +447,33 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   }
 
   const short = (n) => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.0', '') + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(Math.round(n));
+  function forecast() {
+    const ym = today().slice(0, 7), end = dueDate(ym, 31), now = new Date();
+    const dim = daysInMonth(ym), dn = now.getDate(), daysLeft = dim - dn;
+    const bal = sum(S.cfg.accounts.filter((a) => a.kind !== 'savings'), balance);
+    const items = [], pm = paidMap(), rm = recvMap();
+    PAY.forEach((p, i) => { if (!pm[i] && p[0] >= today() && p[0] <= end) items.push({ name: 'Ипотека', amount: -p[3], date: p[0] }); });
+    recurringDue().forEach((x) => { if (x.due >= today() && x.due <= end) items.push({ name: x.r.name, amount: -x.r.amount, date: x.due }); });
+    items.sort((a, b) => a.date.localeCompare(b.date));
+    const base = bal + sum(items, (x) => x.amount);
+    const spent = sum(monthTx(ym).filter((t) => t.type === 'expense' && t.kind !== 'settle' && t.kind !== 'mortgage' && !t.rid), eff);
+    const pace = dn >= 3 ? spent / dn : 0;
+    const refund = taxRefunds().find((r) => r.key === ym && !rm[r.key]);
+    return { bal, items, base, pace, daysLeft, withPace: base - pace * daysLeft, refund };
+  }
+  function forecastCard() {
+    const f = forecast();
+    const rows = f.items.map((x) => `<div class="row between small"><span class="muted">${fmtDate(x.date)} · ${esc(x.name)}</span><span class="num out">${money(x.amount, 0)}</span></div>`).join('');
+    return `<div class="card"><h2>Прогноз на конец месяца</h2>
+      <div class="row between small"><span class="muted">Сейчас на текущих счетах</span><span class="num">${money(f.bal, 0)}</span></div>
+      ${rows || '<div class="small muted">Обязательных платежей до конца месяца нет.</div>'}
+      <div class="row between" style="margin-top:10px"><b>После платежей</b><span class="mid num ${f.base < 0 ? 'out' : ''}">${money(f.base, 0)}</span></div>
+      ${f.pace > 0 ? `<div class="row between small" style="margin-top:6px"><span class="muted">С обычными тратами (около ${money(f.pace, 0)} в день, ещё ${f.daysLeft} дн.)</span><b class="num ${f.withPace < 0 ? 'out' : ''}">${money(f.withPace, 0)}</b></div>` : ''}
+      ${f.refund ? `<div class="small in" style="margin-top:8px">Плюс возврат налога около ${money(f.refund.amount, 0)}, если придёт в этом месяце.</div>` : ''}
+      ${f.withPace < 0 || f.base < 0 ? '<div class="notice" style="margin-top:10px">Денег на текущих счетах может не хватить. Проверь, нужен ли перевод с накопительного.</div>' : ''}
+      </div>`;
+  }
+
   function monthChart() {
     const ms = []; for (let k = 5; k >= 0; k--) ms.push(addPeriod(S.month, -k));
     const data = ms.map((ym) => totals(monthTx(ym)));
